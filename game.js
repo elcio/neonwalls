@@ -242,6 +242,8 @@
   // ---------- estado da partida ----------
   let fx = [], derezAt = [null, null]; // efeitos de fim de partida; quando cada peão some
   let state, owners, trails, disp, anim, lastAct, mode, ghost, busy, over, hover;
+  let wallO = 0;          // orientação da parede-fantasma (0 horizontal, 1 vertical)
+  let wallNext = false;   // a sua última jogada foi parede: volta ao modo parede na próxima vez
   let cpuProgress = null; // progresso do peão do computador (E.trackProgress), contra o vaivém
   let gameId = 0, shake = 0;
   let record = null;  // lances da partida em andamento, para o histórico
@@ -280,6 +282,7 @@
     anim = [null, null];      // movimento do peão em curso: { t0, dur, from, to }
     lastAct = [null, null];   // última ação de cada jogador (peão ou parede): { t0, dur }
     mode = 'move';
+    wallNext = false;
     ghost = null;
     busy = false;
     over = false;
@@ -297,11 +300,14 @@
   const isTouch = () => root.classList.contains('touch');
   root.classList.toggle('touch', matchMedia('(pointer: coarse)').matches);
 
+  // No desktop não há modos: as setas movem o peão e o mouse coloca paredes.
+  // O modo parede (mode === 'wall') só existe nas telas de toque.
+  const showGhost = () => !isTouch() || mode === 'wall';
+
   function idleText() {
+    if (!isTouch()) return 'Sua vez: setas movem o peão, clique coloca uma parede (R gira).';
     if (mode !== 'wall') return 'Sua vez: mova o peão ou coloque uma parede.';
-    return isTouch()
-      ? 'Modo parede: toque no vão onde quer a parede e toque de novo para confirmar.'
-      : 'Modo parede: R gira, clique para colocar, Esc cancela.';
+    return 'Modo parede: toque no vão onde quer a parede e toque de novo para confirmar.';
   }
 
   // a barra do rodapé repete o status do painel visível
@@ -328,14 +334,10 @@
       if (pips.children.length !== 10) pips.innerHTML = '<i></i>'.repeat(10);
       [...pips.children].forEach((el, k) => el.classList.toggle('on', k < state.walls[i]));
     }
-    const wallBtn = $('btn-wall');
-    wallBtn.disabled = !canAct() || state.walls[HUMAN] === 0;
-    wallBtn.classList.toggle('active', mode === 'wall');
-    $('btn-rotate').hidden = mode !== 'wall';
+    const noWall = !canAct() || state.walls[HUMAN] === 0;
+    $('btn-rotate').disabled = noWall;
     $('btn-history').disabled = busy;
-    $('lv-wall').disabled = !canAct() || state.walls[HUMAN] === 0;
-    $('lv-wall').classList.toggle('active', mode === 'wall');
-    $('lv-rotate').hidden = mode !== 'wall';
+    $('lv-rotate').disabled = noWall;
     const tbWall = $('tb-wall');
     tbWall.disabled = !canAct() || state.walls[HUMAN] === 0;
     tbWall.classList.toggle('active', mode === 'wall');
@@ -354,6 +356,8 @@
       return;
     }
     record.moves.push(E.notate(move));
+    const pl = state.turn;
+    if (pl === HUMAN) wallNext = move.t === 'w';
     if (state.turn === CPU) cpuProgress = E.trackProgress(state, move, cpuProgress);
     applyVisual(move);
 
@@ -367,8 +371,18 @@
       record.moves.push('-');
     }
     if (state.turn === CPU) cpuTurn();
+    else if (pl === CPU && resumeWallMode()) return;
     else setStatus(idleText());
     refresh();
+  }
+
+  // Na sua vez, depois de ter colocado uma parede, já começa no modo parede
+  // (com a mesma orientação da última).
+  function resumeWallMode() {
+    if (!isTouch() || !wallNext || state.walls[HUMAN] === 0) return false;
+    ghost = null;
+    setMode('wall');
+    return mode === 'wall';
   }
 
   // aplica o lance no estado da cena atual, com animação e som
@@ -442,7 +456,7 @@
     if (m === 'wall' && !ghost) {
       // começa logo à frente do peão do computador
       const [r, c] = state.p[CPU];
-      ghost = { o: 0, r: Math.min(r, W - 1), c: Math.min(c, W - 1) };
+      ghost = { o: wallO, r: Math.min(r, W - 1), c: Math.min(c, W - 1) };
     }
     canvas.style.cursor = m === 'wall' ? 'crosshair' : 'default';
     setStatus(idleText());
@@ -450,10 +464,10 @@
   }
 
   function rotate() {
-    if (mode === 'wall' && ghost) {
-      ghost = { ...ghost, o: 1 - ghost.o };
-      sound.tick();
-    }
+    if (!showGhost()) return;
+    wallO = 1 - (ghost ? ghost.o : wallO);
+    if (ghost) ghost = { ...ghost, o: wallO };
+    sound.tick();
   }
 
   function randomStep() {
@@ -492,6 +506,7 @@
         if (!res.move) { // sem lances possíveis: passa a vez
           state.turn = HUMAN;
           record.moves.push('-');
+          if (resumeWallMode()) return;
           setStatus(idleText());
           refresh();
           return;
@@ -905,10 +920,13 @@
   }
 
   function drawGhost(t) {
-    if (mode !== 'wall' || !ghost || !canAct()) return;
+    if (!showGhost() || !ghost || !canAct() || state.walls[HUMAN] === 0) return;
     const ok = E.wallStatus(state, HUMAN, ghost.o, ghost.r, ghost.c) === 'ok';
-    const a = 0.45 + 0.15 * Math.sin(t / 200);
-    drawWall(ghost.o, ghost.r, ghost.c, ok ? COLOR[HUMAN] : BAD, ok ? a : 0.6, 14);
+    // semitransparente por inteiro (brilho e núcleo juntos): oscila de 25% a 50%
+    ctx.save();
+    ctx.globalAlpha = 0.375 + 0.125 * Math.sin(t / 200);
+    drawWall(ghost.o, ghost.r, ghost.c, ok ? COLOR[HUMAN] : BAD, 1, 14);
+    ctx.restore();
   }
 
   function drawPawns(t) {
@@ -1390,6 +1408,11 @@
   // ---------- entrada ----------
   canvas.addEventListener('pointermove', e => {
     const [x, y] = pointerPos(e);
+    if (e.pointerType !== 'touch' && !isTouch()) {
+      ghost = { o: wallO, ...anchorAt(x, y) };
+      canvas.style.cursor = canAct() && state.walls[HUMAN] > 0 ? 'crosshair' : 'default';
+      return;
+    }
     if (mode === 'wall') {
       if (e.pointerType !== 'touch') ghost = { o: ghost.o, ...anchorAt(x, y) };
       return;
@@ -1399,15 +1422,24 @@
     canvas.style.cursor = target ? 'pointer' : 'default';
   });
 
-  canvas.addEventListener('pointerleave', () => { hover = null; });
+  canvas.addEventListener('pointerleave', () => {
+    hover = null;
+    if (!isTouch()) ghost = null;
+  });
 
   canvas.addEventListener('pointerdown', e => {
     if (e.pointerType === 'touch' && !isTouch()) {
       root.classList.add('touch');
-      if (mode === 'wall') setStatus(idleText());
+      ghost = null;
+      if (canAct()) setStatus(idleText());
     }
     if (e.button !== 0 || !canAct()) return;
     const [x, y] = pointerPos(e);
+    if (!isTouch()) {
+      ghost = { o: wallO, ...anchorAt(x, y) };
+      placeWall();
+      return;
+    }
     if (mode === 'wall') {
       if (e.pointerType !== 'touch') {
         ghost = { o: ghost.o, ...anchorAt(x, y) };
@@ -1443,7 +1475,7 @@
     const d = KEYS[e.code];
     switch (e.code) {
       case 'KeyR': rotate(); return;
-      case 'KeyP': setMode(mode === 'wall' ? 'move' : 'wall'); return;
+      case 'KeyP': if (isTouch()) setMode(mode === 'wall' ? 'move' : 'wall'); return;
       case 'KeyM': toggleSound(); return;
       case 'Escape':
         if (mode === 'wall') setMode('move');
@@ -1484,7 +1516,6 @@
     $(id).addEventListener('click', e => { e.currentTarget.blur(); fn(); });
   }
 
-  onClick('btn-wall', () => setMode(mode === 'wall' ? 'move' : 'wall'));
   onClick('btn-rotate', rotate);
   onClick('tb-wall', () => setMode(mode === 'wall' ? 'move' : 'wall'));
   onClick('tb-rotate', rotate);
@@ -1516,7 +1547,6 @@
   onClick('rv-last', () => goto(Infinity, false));
   onClick('rv-analyze', analyze);
   onClick('rv-learn', startLearn);
-  onClick('lv-wall', () => setMode(mode === 'wall' ? 'move' : 'wall'));
   onClick('lv-rotate', rotate);
   onClick('lv-solution', showSolution);
   onClick('lv-skip', nextPuzzle);

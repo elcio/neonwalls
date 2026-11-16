@@ -438,7 +438,6 @@ kbd {
 
   /* o que a barra já mostra sai do painel */
   .touch #status,
-  .touch #btn-wall,
   .touch #btn-rotate,
   .touch #lv-status,
   .touch #lv-wall-row { display: none !important; }
